@@ -1,96 +1,63 @@
 # ============================================================================
-# Cyber-Triage Requirements
-# Sistema automatizado de análisis DLP con Gemini 3 Pro Preview
+# Cyber-Triage CLI Requirements
+# Sistema de análisis DLP con Gemini 2.5 Pro
 # Python 3.10+
 # ============================================================================
 
 # ============================================================================
-# CORE: Gemini 3 Pro Preview API
+# CORE: Gemini 2.5 Pro API (Estable)
 # ============================================================================
-# IMPORTANTE: Versión 0.8.0+ requerida para Gemini 3 Pro Preview
-# Incluye nueva API: from google import genai
-google-generativeai>=0.8.0
-
-# ============================================================================
-# WEB UI: Streamlit (opcional - no requerido para CLI)
-# ============================================================================
-streamlit>=1.30.0
-streamlit-extras>=0.3.6  # Componentes adicionales útiles
+google-generativeai==0.8.5   # API estable de Gemini
 
 # ============================================================================
 # CLI: Rich Terminal UI
 # ============================================================================
-rich>=13.7.0                 # CLI interactiva con colores y formatting
+rich==13.7.1                 # CLI interactiva con colores y formatting
 
 # ============================================================================
 # AWS: S3 y Cyberhaven Integration
 # ============================================================================
-boto3>=1.34.0        # Cliente AWS S3
-botocore>=1.34.0     # Core de boto3
-requests>=2.31.0     # API HTTP para Cyberhaven
+boto3==1.35.76               # Cliente AWS S3  
+botocore==1.35.76            # Core de boto3
+requests==2.32.3             # API HTTP para Cyberhaven
 
 # ============================================================================
-# DATABASE: SQLite + ORM
+# DATABASE: SQLite viene built-in
 # ============================================================================
-# SQLite viene built-in en Python, pero agregamos utilities
-pandas>=2.1.0        # DataFrames para análisis de datos
+pandas==2.2.3                # DataFrames para análisis (opcional)
 
 # ============================================================================
 # DOCUMENT PROCESSING: PDF, Word, Excel
 # ============================================================================
-PyPDF2>=3.0.0                # Lectura de PDFs
-python-docx>=1.1.0           # Lectura de Word (.docx)
-openpyxl>=3.1.0              # Lectura de Excel (.xlsx)
-python-pptx>=0.6.23          # Lectura de PowerPoint (.pptx)
+PyPDF2==3.0.1                # Lectura de PDFs
+python-docx==1.1.2           # Lectura de Word (.docx)
+openpyxl==3.1.5              # Lectura de Excel (.xlsx)
+python-pptx==1.0.2           # Lectura de PowerPoint (.pptx)
 
 # ============================================================================
 # IMAGE PROCESSING
 # ============================================================================
-Pillow>=10.0.0               # Manipulación de imágenes
-pytesseract>=0.3.10          # OCR para imágenes (opcional)
+Pillow==11.0.0               # Manipulación de imágenes
 
 # ============================================================================
 # UTILITIES
 # ============================================================================
-python-dotenv>=1.0.0         # Manejo de .env files
-pyyaml>=6.0.1                # Parsing YAML
-python-dateutil>=2.8.2       # Parsing de fechas
-pytz>=2024.1                 # Timezones
+python-dotenv==1.0.1         # Manejo de .env files
+python-dateutil==2.9.0       # Parsing de fechas
 
 # ============================================================================
-# DEVELOPMENT & TESTING (Opcional en producción)
-# ============================================================================
-pytest>=7.4.0                # Testing framework
-pytest-cov>=4.1.0            # Coverage reports
-black>=23.12.0               # Code formatter
-flake8>=7.0.0                # Linter
-mypy>=1.8.0                  # Type checker
-
-# ============================================================================
-# MONITORING & LOGGING
-# ============================================================================
-# logging viene built-in, pero agregamos enhancements
-colorlog>=6.8.0              # Colored logs para debugging
-
-# ============================================================================
-# SECURITY
-# ============================================================================
-cryptography>=42.0.0         # Cifrado de credenciales (futuro)
-
-# ============================================================================
-# COMPATIBILITY NOTES
+# NOTES
 # ============================================================================
 # - Python 3.10+ requerido
-# - Amazon Linux 2 compatible
-# - Docker Alpine compatible
-# - Windows/Mac/Linux compatible
+# - Amazon Linux 2 compatible vía Docker
+# - Docker: python:3.11-slim base image
 #
-# INSTALACIÓN:
+# INSTALACIÓN LOCAL:
 #   pip install -r requirements.txt
 #
-# ACTUALIZACIÓN:
-#   pip install --upgrade -r requirements.txt
+# INSTALACIÓN EN AMAZON LINUX 2 (sin Docker):
+#   pip3 install -r requirements.txt --break-system-packages
 #
-# FREEZE (para lockfile):
-#   pip freeze > requirements-lock.txt
+# DOCKER (Recomendado):
+#   docker build -t cyber-triage-cli .
 # ============================================================================
