@@ -4,8 +4,7 @@ import time
 from typing import Dict, Optional, List
 from pathlib import Path
 import logging
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 from db_manager import DatabaseManager
 
 logging.basicConfig(
@@ -20,22 +19,30 @@ class GeminiAnalyzer:
         self, 
         api_key: Optional[str] = None,
         db_manager: Optional[DatabaseManager] = None,
-        model_name: str = "gemini-3-pro-preview",
-        thinking_level: str = "high"
+        model_name: str = "gemini-2.5-pro-latest"
     ):
+        """
+        Inicializa el analizador con Gemini 2.5 Pro
+        
+        Args:
+            api_key: API key de Google AI (si no se proporciona, lee de GEMINI_API_KEY)
+            db_manager: Instancia de DatabaseManager (opcional)
+            model_name: Modelo a usar (default: gemini-2.5-pro-latest)
+        """
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY no encontrada. Configura la variable de entorno o pasa api_key.")
         
-        self.client = genai.Client(api_key=self.api_key)
+        # Configurar Gemini con API estable
+        genai.configure(api_key=self.api_key)
         self.model_name = model_name
-        self.thinking_level = thinking_level
         
         self.db = db_manager or DatabaseManager()
         
         self.system_prompt = self._load_system_prompt()
         self.rag_template = self._load_rag_template()
         
+        # Schema para JSON estructurado
         self.response_schema = {
             "type": "object",
             "properties": {
@@ -80,9 +87,10 @@ class GeminiAnalyzer:
             "required": ["verdict", "confidence", "summary", "reasoning", "risk_level", "indicators"]
         }
         
-        logger.info(f"GeminiAnalyzer inicializado con modelo: {model_name}, thinking_level: {thinking_level}")
+        logger.info(f"GeminiAnalyzer inicializado con modelo: {model_name}")
     
     def _load_system_prompt(self) -> str:
+        """Carga el system prompt desde archivo"""
         prompt_path = Path("./prompts/system_prompt.md")
         try:
             with open(prompt_path, 'r', encoding='utf-8') as f:
@@ -94,6 +102,7 @@ class GeminiAnalyzer:
             raise
     
     def _load_rag_template(self) -> str:
+        """Carga el template RAG desde archivo"""
         template_path = Path("./prompts/rag_template.md")
         try:
             with open(template_path, 'r', encoding='utf-8') as f:
@@ -105,6 +114,7 @@ class GeminiAnalyzer:
             return ""
     
     def _build_rag_context(self, limit: int = 5) -> str:
+        """Construye contexto RAG con feedback histórico"""
         feedback_items = self.db.get_feedback_for_rag(limit=limit)
         if not feedback_items:
             return self.rag_template.replace("{{#if has_feedback}}", "{{else}}")
@@ -142,12 +152,16 @@ class GeminiAnalyzer:
         return rag_context
     
     def _read_file_content(self, file_path: str) -> str:
+        """Lee el contenido de un archivo y lo retorna como texto"""
         try:
             file_extension = Path(file_path).suffix.lower()
+            
+            # Archivos de texto plano
             if file_extension in ['.txt', '.md', '.py', '.js', '.json', '.xml', '.csv', '.log', '.yaml', '.yml']:
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                     return f.read()
             
+            # PDFs
             elif file_extension == '.pdf':
                 try:
                     import PyPDF2
@@ -161,6 +175,7 @@ class GeminiAnalyzer:
                     logger.warning("PyPDF2 no instalado. No se puede leer PDF.")
                     return f"[ARCHIVO PDF: {Path(file_path).name} - No se pudo extraer texto]"
             
+            # Word
             elif file_extension in ['.docx', '.doc']:
                 try:
                     import docx
@@ -170,9 +185,11 @@ class GeminiAnalyzer:
                     logger.warning("python-docx no instalado. No se puede leer DOCX.")
                     return f"[ARCHIVO WORD: {Path(file_path).name} - No se pudo extraer texto]"
             
+            # Imágenes
             elif file_extension in ['.png', '.jpg', '.jpeg', '.gif', '.bmp']:
                 return f"[ARCHIVO IMAGEN: {Path(file_path).name} - Requiere análisis visual]"
             
+            # Binarios
             else:
                 return f"[ARCHIVO BINARIO: {Path(file_path).name} - Tipo: {file_extension}]"
         
@@ -186,6 +203,17 @@ class GeminiAnalyzer:
         incident_id: str,
         use_rag: bool = True
     ) -> Dict:
+        """
+        Analiza un archivo con Gemini 2.5 Pro y retorna el veredicto
+        
+        Args:
+            file_path: Ruta al archivo a analizar
+            incident_id: ID del incidente
+            use_rag: Si True, incluye contexto RAG con feedback histórico
+            
+        Returns:
+            Dict con el resultado del análisis
+        """
         start_time = time.time()
         try:
             logger.info(f"Analizando archivo: {file_path}")
@@ -199,6 +227,7 @@ class GeminiAnalyzer:
                     "incident_id": incident_id
                 }
             
+            # Construir prompt completo
             full_prompt = self.system_prompt + "\n\n"
             
             if use_rag:
@@ -212,36 +241,41 @@ class GeminiAnalyzer:
             full_prompt += f"**Incident ID:** {incident_id}\n\n"
             full_prompt += "**CONTENIDO DEL ARCHIVO:**\n"
             full_prompt += "```\n"
-            full_prompt += file_content[:50000]
+            full_prompt += file_content[:50000]  # Limitar a 50k chars
             full_prompt += "\n```\n\n"
             full_prompt += f"{'-'*60}\n\n"
             full_prompt += "🎯 **GENERA TU ANÁLISIS AHORA:**\n"
             
-            logger.info(f"Enviando análisis a Gemini 3 Pro (thinking_level: {self.thinking_level})...")
+            logger.info(f"Enviando análisis a Gemini 2.5 Pro...")
             
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=full_prompt,
-                config=types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(thinking_level=self.thinking_level),
-                    temperature=1.0,
-                    response_mime_type="application/json",
-                    response_json_schema=self.response_schema,
-                )
+            # Crear modelo con configuración
+            model = genai.GenerativeModel(
+                model_name=self.model_name,
+                generation_config={
+                    "temperature": 1.0,
+                    "response_mime_type": "application/json",
+                    "response_schema": self.response_schema
+                }
             )
+            
+            # Generar respuesta
+            response = model.generate_content(full_prompt)
             
             processing_time = time.time() - start_time
             
             raw_response = response.text
             logger.info(f"Respuesta recibida de Gemini en {processing_time:.2f}s")
             
+            # Parsear respuesta JSON
             analysis = json.loads(raw_response)
             
+            # Validar campos obligatorios
             required_fields = ['verdict', 'confidence', 'summary', 'reasoning']
             for field in required_fields:
                 if field not in analysis:
                     raise ValueError(f"Campo obligatorio '{field}' no encontrado en respuesta")
             
+            # Guardar análisis en DB
             analysis_data = {
                 'incident_id': incident_id,
                 'gemini_verdict': analysis['verdict'],
@@ -296,6 +330,20 @@ class GeminiAnalyzer:
         analyst_comment: str,
         relevance_score: float = 1.0
     ) -> bool:
+        """
+        Guarda feedback del analista para RAG
+        
+        Args:
+            incident_id: ID del incidente
+            analysis_id: ID del análisis
+            original_verdict: Veredicto original de Gemini
+            corrected_verdict: Veredicto correcto según analista
+            analyst_comment: Comentario explicativo
+            relevance_score: Relevancia del caso (0.0-1.0)
+            
+        Returns:
+            True si se guardó correctamente
+        """
         feedback_data = {
             'incident_id': incident_id,
             'analysis_id': analysis_id,
@@ -312,11 +360,13 @@ class GeminiAnalyzer:
         return success
     
     def get_analysis_summary(self, incident_id: str) -> Optional[Dict]:
+        """Obtiene el último análisis de un incidente"""
         return self.db.get_latest_analysis(incident_id)
 
 
 if __name__ == "__main__":
-    print("🧪 Test de GeminiAnalyzer\n")
+    """Test básico del analizador"""
+    print("🧪 Test de GeminiAnalyzer (Gemini 2.5 Pro)\n")
     
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
@@ -326,36 +376,34 @@ if __name__ == "__main__":
     
     print("✅ API Key encontrada\n")
     
+    # Crear archivo de prueba
     test_file = "./evidencia_temp/test_credentials.txt"
     os.makedirs("./evidencia_temp", exist_ok=True)
     
     with open(test_file, 'w') as f:
-        f.write("user=admin\npassword=secret123\n")
+        f.write("user=admin\npassword=secret123\nAPI_KEY=sk-1234567890abcdef\n")
     print(f"📝 Archivo de prueba creado: {test_file}\n")
     
     try:
-        print("🔧 Inicializando GeminiAnalyzer (Gemini 3 Pro Preview)...")
-        analyzer = GeminiAnalyzer(
-            model_name="gemini-3-pro-preview",
-            thinking_level="high"
-        )
+        print("🔧 Inicializando GeminiAnalyzer (Gemini 2.5 Pro)...")
+        analyzer = GeminiAnalyzer(model_name="gemini-2.5-pro-latest")
         
-        print("🤖 Enviando análisis a Gemini 3 Pro...\n")
+        print("🤖 Enviando análisis a Gemini 2.5 Pro...\n")
         result = analyzer.analyze_file(
             file_path=test_file,
-            incident_id="TEST-GEMINI-3-001",
+            incident_id="TEST-GEMINI-25-001",
             use_rag=True
         )
         
         if result['success']:
             print("✅ ANÁLISIS COMPLETADO\n")
             print(f"📊 Veredicto: {result['verdict']}")
-            print(f"🎯 Confianza: {result['confidence']}")
+            print(f"🎯 Confianza: {result['confidence']:.1%}")
             print(f"📝 Resumen: {result['summary']}")
             print(f"\n🔍 Razonamiento:\n{result['reasoning']}")
             
             if result.get('indicators'):
-                print(f"\n⚠️ Indicadores encontrados:")
+                print(f"\n⚠️  Indicadores encontrados:")
                 for indicator in result['indicators']:
                     print(f"  - {indicator}")
             
@@ -364,7 +412,7 @@ if __name__ == "__main__":
                 for rec in result['recommendations']:
                     print(f"  - {rec}")
             
-            print(f"\n⏱️ Tiempo de procesamiento: {result['processing_time']:.2f}s")
+            print(f"\n⏱️  Tiempo de procesamiento: {result['processing_time']:.2f}s")
         else:
             print(f"❌ ERROR: {result['error']}")
             if result.get('raw_response'):
