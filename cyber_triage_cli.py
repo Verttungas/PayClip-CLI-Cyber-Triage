@@ -40,10 +40,9 @@ class CyberTriageCLI:
         try:
             self.analyzer = GeminiAnalyzer(
                 api_key=api_key,
-                db_manager=self.db,
-                thinking_level="high"
+                db_manager=self.db
             )
-            console.print("[green]✅ Gemini 3 Pro inicializado[/green]")
+            console.print("[green]✅ Gemini 2.5 Pro inicializado[/green]")
         except Exception as e:
             console.print(f"[red]❌ Error inicializando Gemini: {e}[/red]")
             sys.exit(1)
@@ -53,9 +52,9 @@ class CyberTriageCLI:
         console.clear()
         header = """
         ╔═══════════════════════════════════════════════╗
-        ║  🛡️  CYBER-TRIAGE CLI v1.0                   ║
-        ║  DLP Incident Analysis System                ║
-        ║  Powered by Gemini 3 Pro Preview             ║
+        ║  🛡️  CYBER-TRIAGE CLI v1.0                    ║
+        ║  DLP Incident Analysis System                 ║
+        ║  Powered by Gemini 2.5 Pro                    ║
         ╚═══════════════════════════════════════════════╝
         """
         console.print(header, style="bold cyan")
