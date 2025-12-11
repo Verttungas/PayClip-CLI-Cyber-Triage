@@ -4,7 +4,7 @@ import requests
 import json
 from datetime import datetime, timedelta
 import logging
-from db_manager import DatabaseManager
+from pathlib import Path
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,11 +20,13 @@ DOWNLOAD_DIR = os.getenv("EVIDENCE_DIR", "./evidencia_temp")
 if not CYBERHAVEN_TOKEN:
     logger.warning("CYBERHAVEN_API_KEY no está configurada. El script fallará si intenta conectar.")
 
-if not os.path.exists(DOWNLOAD_DIR):
-    os.makedirs(DOWNLOAD_DIR)
-    logger.info(f"Directorio creado: {DOWNLOAD_DIR}")
+# Crear directorio base
+base_dir = Path(DOWNLOAD_DIR)
+base_dir.mkdir(exist_ok=True)
+
 
 def get_token():
+    """Obtiene access token de Cyberhaven"""
     if not CYBERHAVEN_TOKEN:
         return None
     url = f"{CYBERHAVEN_BASE_URL}/v2/auth/token/access"
@@ -39,15 +41,21 @@ def get_token():
         return None
 
 
-def download_from_s3(file_hash, original_ext):
+def download_from_s3(file_hash, output_path):
+    """
+    Descarga archivo de S3 usando el hash.
+    Retorna True si se descargó, False si no.
+    """
     s3 = boto3.client('s3')
     try:
-        logger.debug(f"Buscando en S3: {BUCKET_NAME}/{file_hash[:15]}...")
+        logger.debug(f"Buscando en S3: {file_hash[:20]}...")
         response = s3.list_objects_v2(Bucket=BUCKET_NAME, Prefix=file_hash)
+        
         if 'Contents' not in response:
-            logger.warning(f"No se encontró archivo con hash: {file_hash[:15]}")
-            return None
+            logger.warning(f"No se encontró en S3: {file_hash[:20]}")
+            return False
 
+        # Buscar archivo que NO sea .html o .json (metadatos)
         target_key = None
         for obj in response['Contents']:
             key = obj['Key']
@@ -55,27 +63,104 @@ def download_from_s3(file_hash, original_ext):
                 target_key = key
                 break
 
-        if target_key:
-            local_filename = f"{file_hash}.{original_ext}"
-            local_path = os.path.join(DOWNLOAD_DIR, local_filename)
+        if not target_key:
+            logger.warning(f"No se encontró archivo válido en S3: {file_hash[:20]}")
+            return False
 
-            logger.info(f"Descargando: {target_key} -> {local_filename}")
-            s3.download_file(BUCKET_NAME, target_key, local_path)
-            logger.info(f"Descargado: {local_path}")
-            return local_path
-        else:
-            logger.warning(f"No se encontró archivo válido para hash: {file_hash[:15]}")
+        logger.info(f"Descargando: {target_key}")
+        s3.download_file(BUCKET_NAME, target_key, output_path)
+        
+        file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
+        logger.info(f"✅ Descargado: {output_path} ({file_size_mb:.2f} MB)")
+        return True
 
     except Exception as e:
-        logger.error(f"Error descargando desde S3: {e}")
-    return None
+        logger.error(f"Error descargando de S3: {e}")
+        return False
+
+
+def extract_file_info(incident):
+    """
+    Extrae información del archivo del incidente.
+    Retorna: (file_name, sha256_hash, md5_hash, extension)
+    """
+    file_info = {}
+    
+    # Buscar en event_details.start_event.source.file
+    event_details = incident.get('event_details', {})
+    start_event = event_details.get('start_event', {})
+    source = start_event.get('source', {})
+    
+    if 'file' in source:
+        file_info = source['file']
+    elif 'file_info' in incident:
+        file_info = incident['file_info']
+    
+    file_name = file_info.get('name', 'unknown')
+    sha256 = file_info.get('sha256_hash')
+    md5 = file_info.get('md5_hash')
+    
+    # Determinar extensión
+    if file_name != 'unknown' and '.' in file_name:
+        extension = file_name.split('.')[-1]
+    else:
+        extension = file_info.get('extension', 'bin')
+    
+    return file_name, sha256, md5, extension
+
+
+def process_incident(incident):
+    """
+    Procesa un incidente:
+    1. Crea directorio
+    2. Guarda metadata.json
+    3. Descarga archivo de S3 si existe
+    """
+    incident_id = incident.get('id')
+    incident_dir = base_dir / incident_id
+    
+    # Crear directorio para el incidente
+    incident_dir.mkdir(exist_ok=True)
+    
+    # 1. Guardar metadata completa
+    metadata_path = incident_dir / "metadata.json"
+    with open(metadata_path, 'w', encoding='utf-8') as f:
+        json.dump(incident, f, indent=2, ensure_ascii=False)
+    logger.info(f"Metadata guardada: {metadata_path}")
+    
+    # 2. Extraer info del archivo
+    file_name, sha256, md5, extension = extract_file_info(incident)
+    
+    # 3. Descargar archivo de S3 si existe hash
+    if sha256:
+        output_filename = f"{file_name}" if file_name != 'unknown' else f"file.{extension}"
+        output_path = incident_dir / output_filename
+        
+        logger.info(f"Archivo detectado: {file_name}")
+        
+        # Intentar con SHA256
+        if download_from_s3(sha256, str(output_path)):
+            logger.info(f"✅ Incidente {incident_id}: archivo descargado")
+            return True
+        
+        # Intentar con MD5 si SHA256 falló
+        if md5:
+            logger.info(f"Intentando con MD5 hash...")
+            if download_from_s3(md5, str(output_path)):
+                logger.info(f"✅ Incidente {incident_id}: archivo descargado")
+                return True
+        
+        logger.warning(f"No se pudo descargar archivo para: {incident_id}")
+        return False
+    else:
+        logger.info(f"ℹ️  Incidente {incident_id}: sin archivo (solo metadata)")
+        return True
+
 
 def main():
     logger.info("="*60)
     logger.info("CYBER-TRIAGE: EVIDENCE DOWNLOADER")
     logger.info("="*60)
-    
-    db = DatabaseManager()
     
     token = get_token()
     if not token:
@@ -102,36 +187,17 @@ def main():
         
         for inc in incidents:
             incident_id = inc.get('id')
-            file_info = inc.get('file_info', {})
-            file_name = file_info.get('name', 'unknown')
-            file_hash = file_info.get('content_hash')
-            file_size = file_info.get('size', 0)
-            user_email = inc.get('user', {}).get('email', 'unknown')
-            
-            if db.get_incident(incident_id):
-                logger.info(f"Incidente {incident_id} ya existe en DB. Saltando.")
-                continue
-            
-            file_path = None
-            if file_hash:
-                ext = file_name.split('.')[-1] if '.' in file_name else 'bin'
-                file_path = download_from_s3(file_hash, ext)
-            
-            incident_data = {
-                'incident_id': incident_id,
-                'file_name': file_name,
-                'file_path': file_path,
-                'file_type': file_name.split('.')[-1] if '.' in file_name else 'unknown',
-                'file_size': file_size,
-                'user_email': user_email,
-                'cyberhaven_data': inc
-            }
-            
-            db.insert_incident(incident_data)
+            logger.info(f"\nProcesando: {incident_id}")
+            process_incident(inc)
             
     except Exception as e:
         logger.error(f"Error obteniendo incidentes: {e}")
         return
+    
+    logger.info("\n" + "="*60)
+    logger.info("✅ DESCARGA COMPLETADA")
+    logger.info("="*60)
+
 
 if __name__ == "__main__":
     main()
