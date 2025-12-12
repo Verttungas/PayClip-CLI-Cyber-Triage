@@ -32,6 +32,7 @@ class GeminiAnalyzer:
         
         self.system_prompt = self._load_system_prompt()
         
+        # NUEVO SCHEMA OPTIMIZADO
         self.response_schema = {
             "type": "object",
             "properties": {
@@ -44,13 +45,23 @@ class GeminiAnalyzer:
                     "type": "number",
                     "description": "Nivel de confianza entre 0.0 y 1.0"
                 },
-                "summary": {
+                "executive_summary": {
                     "type": "string",
-                    "description": "Resumen breve del análisis (máx 200 chars)"
+                    "description": "Resumen ejecutivo contextual (Quién, Qué, Dónde) en español latino"
+                },
+                "incident_context": {
+                    "type": "object",
+                    "properties": {
+                        "user": {"type": "string"},
+                        "source": {"type": "string"},
+                        "destination": {"type": "string"},
+                        "data_type": {"type": "string"}
+                    },
+                    "required": ["user", "source", "destination"]
                 },
                 "reasoning": {
                     "type": "string",
-                    "description": "Explicación detallada del veredicto (mín 100 chars)"
+                    "description": "Explicación técnica detallada"
                 },
                 "risk_level": {
                     "type": "string",
@@ -61,19 +72,9 @@ class GeminiAnalyzer:
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Lista de indicadores técnicos encontrados"
-                },
-                "recommendations": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Acciones recomendadas para el SOC"
-                },
-                "false_positive_reasons": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Razones si es FALSE_POSITIVE"
                 }
             },
-            "required": ["verdict", "confidence", "summary", "reasoning", "risk_level", "indicators"]
+            "required": ["verdict", "confidence", "executive_summary", "incident_context", "reasoning", "risk_level", "indicators"]
         }
         
         logger.info(f"GeminiAnalyzer inicializado con modelo: {model_name}")
@@ -156,38 +157,54 @@ class GeminiAnalyzer:
             return f"[ERROR leyendo archivo: {str(e)}]"
     
     def _format_incident_metadata(self, metadata: Dict) -> str:
-        """Formatea metadata de Cyberhaven para el prompt"""
-        user = metadata.get('user', {})
-        policy = metadata.get('policy', {})
+        """Formatea metadata enriquecida incluyendo Copy/Paste"""
+        user = metadata.get('user', {}).get('id', 'unknown')
         
         event_details = metadata.get('event_details', {})
         start_event = event_details.get('start_event', {})
-        action = start_event.get('action', {})
-        source = start_event.get('source', {})
         
-        user_email = user.get('id', 'unknown')
-        policy_name = policy.get('name', 'unknown')
-        severity = policy.get('severity', 'unknown')
-        risk_score = metadata.get('risk_score', 0)
-        action_kind = action.get('kind', 'unknown')
+        # Acción
+        action = start_event.get('action', {}).get('kind', 'unknown')
         
-        file_info = source.get('file', {})
-        file_name = file_info.get('name', 'unknown')
-        
+        # Origen (Source)
+        src_info = start_event.get('source', {})
+        source_str = "Desconocido"
+        if 'app' in src_info:
+            source_str = f"App: {src_info['app'].get('name')}"
+        elif 'file' in src_info:
+            source_str = f"File: {src_info['file'].get('name')}"
+
+        # Destino (Destination)
+        dst_info = start_event.get('destination', {})
+        dest_str = "Desconocido"
+        if 'internet' in dst_info:
+            dest_str = f"Internet URL: {dst_info['internet'].get('url')}"
+        elif 'app' in dst_info:
+            dest_str = f"App: {dst_info['app'].get('name')}"
+        elif 'removable_media' in dst_info:
+            dest_str = "USB / Almacenamiento Externo"
+        elif 'email' in dst_info:
+             dest_str = f"Email to: {dst_info['email'].get('recipient', 'unknown')}"
+
+        # Copy Paste Content
+        clipboard_content = ""
+        if 'content_inspection' in metadata:
+            clipboard_content = metadata['content_inspection'].get('snippet', '')
+        elif 'clipboard' in str(action).lower():
+             clipboard_content = metadata.get('payload', '')
+
         formatted = f"""
-{'='*80}
-CYBERHAVEN INCIDENT METADATA
-{'='*80}
-
-Usuario: {user_email}
-Política violada: {policy_name}
-Severidad: {severity}
-Risk Score: {risk_score}/10
-Acción: {action_kind}
-Archivo involucrado: {file_name}
-
-{'='*80}
+{'='*60}
+METADATA DEL INCIDENTE
+{'='*60}
+- Usuario: {user}
+- Acción: {action}
+- Origen Detectado: {source_str}
+- Destino Detectado: {dest_str}
 """
+        if clipboard_content:
+            formatted += f"\n📋 CONTENIDO DEL PORTAPAPELES (SNIPPET):\n{clipboard_content}\n"
+            
         return formatted
     
     def analyze_incident(
@@ -198,14 +215,6 @@ Archivo involucrado: {file_name}
     ) -> Dict:
         """
         Analiza un incidente completo.
-        
-        Args:
-            incident_id: ID del incidente
-            incident_dir: Directorio con metadata.json y archivo (si existe)
-            use_rag: Usar feedback histórico
-        
-        Returns:
-            Dict con resultado del análisis
         """
         start_time = time.time()
         
@@ -252,7 +261,7 @@ Archivo involucrado: {file_name}
                 full_prompt += "\n" + "="*80 + "\n"
             else:
                 full_prompt += "\n⚠️ INCIDENTE SIN ARCHIVO FÍSICO\n"
-                full_prompt += "Analiza basándote en la metadata de Cyberhaven.\n\n"
+                full_prompt += "Analiza basándote en la metadata de Cyberhaven y el contenido del portapapeles si existe.\n\n"
             
             full_prompt += "\n🎯 GENERA TU ANÁLISIS EN JSON:\n"
             
@@ -275,7 +284,7 @@ Archivo involucrado: {file_name}
             analysis = json.loads(raw_response)
             
             # Validar campos
-            required = ['verdict', 'confidence', 'summary', 'reasoning']
+            required = ['verdict', 'confidence', 'executive_summary', 'reasoning']
             for field in required:
                 if field not in analysis:
                     raise ValueError(f"Campo '{field}' no encontrado")
@@ -298,12 +307,11 @@ Archivo involucrado: {file_name}
                 "analysis_id": analysis_id,
                 "verdict": analysis['verdict'],
                 "confidence": analysis['confidence'],
-                "summary": analysis['summary'],
+                "executive_summary": analysis['executive_summary'],
+                "incident_context": analysis['incident_context'],
                 "reasoning": analysis['reasoning'],
                 "risk_level": analysis.get('risk_level', 'N/A'),
                 "indicators": analysis.get('indicators', []),
-                "recommendations": analysis.get('recommendations', []),
-                "false_positive_reasons": analysis.get('false_positive_reasons', []),
                 "processing_time": processing_time,
                 "has_file": file_content is not None,
                 "file_name": file_name
