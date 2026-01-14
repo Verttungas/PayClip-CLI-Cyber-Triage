@@ -9,27 +9,33 @@ A continuación se presenta feedback de analistas humanos sobre análisis previo
 ---
 
 {{#if has_feedback}}
+
 ## 🔄 CORRECCIONES HISTÓRICAS ({{feedback_count}} casos)
 
 {{#each feedback_items}}
+
 ### Caso #{{@index_plus_1}}: {{file_name}}
 
 **📄 Archivo Analizado:**
+
 - **Nombre:** `{{file_name}}`
 - **Tipo:** {{file_type}}
 - **Fecha del Incidente:** {{incident_date}}
 
 **🤖 Tu Veredicto Original (INCORRECTO):**
+
 ```
 {{original_verdict}}
 ```
 
 **✅ Veredicto Correcto del Analista:**
+
 ```
 {{corrected_verdict}}
 ```
 
 **💬 Comentario del Analista:**
+
 > {{analyst_comment}}
 
 **📊 Relevancia de este Caso:** {{relevance_score}}/1.0
@@ -38,10 +44,11 @@ A continuación se presenta feedback de analistas humanos sobre análisis previo
 {{#if lesson_learned}}
 {{lesson_learned}}
 {{else}}
+
 - Revisa este caso y ajusta tu razonamiento para situaciones similares
 - Considera el contexto empresarial y los flujos de trabajo legítimos
 - No asumas malicia sin evidencia clara
-{{/if}}
+  {{/if}}
 
 ---
 
@@ -53,16 +60,21 @@ Basándote en los casos anteriores, ten en cuenta:
 
 {{#if common_patterns}}
 {{#each common_patterns}}
+
 - **{{pattern_type}}:** {{pattern_description}}
-{{/each}}
-{{else}}
+  {{/each}}
+  {{else}}
+
 ### Errores Comunes a Evitar:
+
 1. **Sobre-clasificación de TRUE POSITIVE:**
+
    - No marcar actividades empresariales normales como amenazas
    - Verificar si el usuario tiene autorización para la acción
    - Considerar si el documento ya es público o de baja sensibilidad
 
 2. **Falsos Negativos (Sub-clasificación):**
+
    - No ignorar credenciales en texto plano aunque estén en repos de dev
    - Datos financieros siempre requieren análisis riguroso
    - Transferencias a dominios externos no corporativos son sospechosas
@@ -71,7 +83,7 @@ Basándote en los casos anteriores, ten en cuenta:
    - Si no estás 80%+ seguro, escala a humano
    - Archivos cifrados sin contexto siempre requieren revisión
    - Actividad de usuarios nuevos o en horarios inusuales necesita validación
-{{/if}}
+     {{/if}}
 
 ---
 
@@ -88,11 +100,13 @@ Cuando analices el archivo actual:
 ---
 
 {{else}}
+
 ## ℹ️ SIN FEEDBACK HISTÓRICO
 
 Aún no hay feedback de analistas humanos. Estás operando con el conocimiento base del system prompt.
 
 **Instrucciones:**
+
 - Sigue estrictamente los criterios de evaluación del system prompt
 - Prefiere REQUIRES_REVIEW sobre veredictos inciertos
 - Documenta exhaustivamente tu razonamiento
@@ -105,14 +119,15 @@ Aún no hay feedback de analistas humanos. Estás operando con el conocimiento b
 ## 📈 ESTADÍSTICAS DE APRENDIZAJE
 
 {{#if has_stats}}
+
 - **Total de Feedback Recibido:** {{total_feedback}}
 - **Correcciones Aplicadas:** {{total_corrections}}
 - **Precisión Actual del Sistema:** {{ai_accuracy}}%
 - **Casos Usados en este Análisis:** {{rag_cases_used}}
-{{else}}
-*Estadísticas aún no disponibles. Este es uno de los primeros análisis.*
-{{/if}}
+  {{else}}
+  _Estadísticas aún no disponibles. Este es uno de los primeros análisis._
+  {{/if}}
 
 ---
 
-*Template Version: 1.0 | Sistema RAG de Cyber-Triage*
+_Template Version: 1.0 | Sistema RAG de Cyber-Triage_
