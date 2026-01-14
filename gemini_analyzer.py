@@ -6,7 +6,7 @@ from pathlib import Path
 import logging
 import google.generativeai as genai
 from db_manager import DatabaseManager
-import PIL.Image  # Fundamental para que Gemini "vea" las imágenes
+import PIL.Image
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,216 +28,185 @@ class GeminiAnalyzer:
         
         genai.configure(api_key=self.api_key)
         self.model_name = model_name
-        
         self.db = db_manager or DatabaseManager()
         self.system_prompt = self._load_system_prompt()
         
-        # Schema optimizado para respuestas estructuradas
         self.response_schema = {
             "type": "object",
             "properties": {
-                "verdict": {
+                "v": {
                     "type": "string",
-                    "enum": ["TRUE_POSITIVE", "FALSE_POSITIVE", "REQUIRES_REVIEW"],
-                    "description": "Veredicto del análisis"
+                    "enum": ["TP", "FP", "RR"],
+                    "description": "TP=True Positive, FP=False Positive, RR=Requires Review"
                 },
-                "confidence": {
+                "c": {
                     "type": "number",
-                    "description": "Nivel de confianza entre 0.0 y 1.0"
+                    "description": "Confidence 0.0-1.0"
                 },
-                "executive_summary": {
+                "s": {
                     "type": "string",
-                    "description": "Resumen ejecutivo contextual (Quién, Qué, Dónde) en español latino"
+                    "description": "Executive summary in Spanish"
                 },
-                "incident_context": {
+                "ctx": {
                     "type": "object",
                     "properties": {
-                        "user": {"type": "string"},
-                        "source": {"type": "string"},
-                        "destination": {"type": "string"},
-                        "data_type": {"type": "string"}
-                    },
-                    "required": ["user", "source", "destination"]
+                        "u": {"type": "string"},
+                        "src": {"type": "string"},
+                        "dst": {"type": "string"},
+                        "dt": {"type": "string"}
+                    }
                 },
-                "reasoning": {
+                "r": {
                     "type": "string",
-                    "description": "Explicación técnica detallada"
+                    "description": "Technical reasoning"
                 },
-                "risk_level": {
+                "rl": {
                     "type": "string",
-                    "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "N/A"],
-                    "description": "Nivel de riesgo si es TRUE_POSITIVE"
+                    "enum": ["C", "H", "M", "L", "N"],
+                    "description": "C=Critical, H=High, M=Medium, L=Low, N=N/A"
                 },
-                "indicators": {
+                "ind": {
                     "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Lista de indicadores técnicos encontrados"
+                    "items": {"type": "string"}
                 }
             },
-            "required": ["verdict", "confidence", "executive_summary", "incident_context", "reasoning", "risk_level", "indicators"]
+            "required": ["v", "c", "s", "ctx", "r", "rl"]
         }
         
-        logger.info(f"GeminiAnalyzer inicializado con modelo: {model_name}")
+        logger.info(f"GeminiAnalyzer inicializado: {model_name}")
     
     def _load_system_prompt(self) -> str:
         prompt_path = Path("./prompts/system_prompt.md")
         try:
             with open(prompt_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            logger.info("System prompt cargado correctamente")
-            return content
+                return f.read()
         except FileNotFoundError:
-            logger.error(f"System prompt no encontrado en {prompt_path}")
-            raise
+            logger.warning("System prompt no encontrado, usando default")
+            return self._get_default_prompt()
     
-    def _build_rag_context(self, limit: int = 5) -> str:
+    def _get_default_prompt(self) -> str:
+        return """Eres un analista DLP. Evalúa incidentes y responde JSON.
+Veredictos: TP=fuga real, FP=falso positivo, RR=requiere revisión humana.
+Evalúa: usuario, origen, destino, contenido del archivo.
+Sé conciso."""
+
+    def _build_rag_context(self, limit: int = 3) -> str:
         feedback_items = self.db.get_feedback_for_rag(limit=limit)
         if not feedback_items:
             return ""
         
-        rag_context = f"\n\n{'='*60}\n"
-        rag_context += "🧠 APRENDIZAJE DE CASOS ANTERIORES\n"
-        rag_context += f"{'='*60}\n\n"
-        
-        for idx, fb in enumerate(feedback_items, 1):
-            rag_context += f"### Caso #{idx}: {fb.get('file_name', 'unknown')}\n\n"
-            rag_context += f"**Tu Veredicto Original:** {fb['original_verdict']}\n"
-            rag_context += f"**Veredicto Correcto:** {fb['corrected_verdict']}\n"
-            rag_context += f"**Comentario:** {fb.get('analyst_comment', 'N/A')}\n\n"
-            rag_context += f"{'-'*60}\n\n"
-        
-        return rag_context
+        rag = "\n[CORRECCIONES PREVIAS]\n"
+        for fb in feedback_items:
+            rag += f"- {fb.get('file_type','?')}: {fb['original_verdict']}->{fb['corrected_verdict']}: {fb.get('analyst_comment', '')[:50]}\n"
+        return rag
     
-    def _read_file_content(self, file_path: str) -> Union[str, PIL.Image.Image]:
-        """
-        Lee contenido de archivo para análisis.
-        Retorna String (texto) o PIL.Image (imagen) para capacidad multimodal.
-        """
+    def _compress_metadata(self, metadata: Dict) -> str:
+        user = metadata.get('user', {}).get('id', 'unknown')
+        policy = metadata.get('policy', {})
+        dataset = metadata.get('dataset', {})
+        
+        event = metadata.get('action', {})
+        src = metadata.get('source', {})
+        dst = metadata.get('destination', {})
+        
+        src_str = "?"
+        if 'app' in src:
+            src_str = src['app'].get('name', '?')
+        elif 'file' in src:
+            src_str = src['file'].get('name', '?')
+        
+        dst_str = "?"
+        if 'outline' in dst:
+            dst_str = dst['outline']
+        elif 'email' in dst:
+            email = dst['email']
+            if 'to' in email:
+                dst_str = ','.join(email['to'][:2])
+        elif 'internet' in dst:
+            dst_str = dst['internet'].get('url', '?')[:50]
+        elif 'removable_media' in dst:
+            dst_str = "USB"
+        elif 'app' in dst:
+            dst_str = dst['app'].get('name', '?')
+        
+        snippet = metadata.get('content_inspection', {}).get('snippet', '')[:200]
+        
+        compressed = f"""U:{user}|P:{policy.get('name','?')}|Sev:{policy.get('severity','?')}
+Src:{src_str}|Dst:{dst_str}
+Act:{event.get('kind','?')}"""
+        
+        if snippet:
+            compressed += f"\nSnippet:{snippet}"
+        
+        return compressed
+    
+    def _read_file_content(self, file_path: str, max_chars: int = 10000) -> Union[str, PIL.Image.Image]:
         try:
             path_obj = Path(file_path)
-            file_extension = path_obj.suffix.lower()
+            ext = path_obj.suffix.lower()
             
-            # --- 1. IMÁGENES (MULTIMODAL) ---
-            if file_extension in ['.png', '.jpg', '.jpeg', '.webp', '.heic', '.heif']:
-                try:
-                    logger.info(f"Cargando imagen para análisis visual: {path_obj.name}")
-                    img = PIL.Image.open(file_path)
-                    return img
-                except Exception as e:
-                    return f"[ERROR cargando imagen {path_obj.name}: {e}]"
+            if ext in ['.png', '.jpg', '.jpeg', '.webp', '.heic', '.heif']:
+                return PIL.Image.open(file_path)
 
-            # --- 2. TEXTO Y CÓDIGO ---
-            if file_extension in ['.txt', '.md', '.py', '.js', '.json', '.xml', '.csv', '.log', '.yaml', '.yml', '.sql', '.sh', '.env']:
+            if ext in ['.txt', '.md', '.py', '.js', '.json', '.xml', '.csv', '.log', '.yaml', '.yml', '.sql', '.sh']:
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    return f.read()
+                    return f.read()[:max_chars]
             
-            # --- 3. DOCUMENTOS OFFICE / PDF ---
-            elif file_extension == '.pdf':
+            elif ext == '.pdf':
                 try:
                     import PyPDF2
                     with open(file_path, 'rb') as f:
                         reader = PyPDF2.PdfReader(f)
                         text = ""
-                        for page in reader.pages:
+                        for page in reader.pages[:5]:
                             text += page.extract_text()
-                        return text
+                        return text[:max_chars]
                 except Exception as e:
-                    return f"[ARCHIVO PDF: {path_obj.name} - Error: {e}]"
+                    return f"[PDF error: {e}]"
             
-            elif file_extension in ['.docx', '.doc']:
+            elif ext in ['.docx', '.doc']:
                 try:
                     import docx
                     doc = docx.Document(file_path)
-                    return "\n".join([para.text for para in doc.paragraphs])
+                    text = "\n".join([p.text for p in doc.paragraphs])
+                    return text[:max_chars]
                 except Exception as e:
-                    return f"[ARCHIVO WORD: {path_obj.name} - Error: {e}]"
+                    return f"[DOCX error: {e}]"
             
-            elif file_extension in ['.xlsx', '.xls']:
+            elif ext in ['.xlsx', '.xls']:
                 try:
                     import pandas as pd
                     df = pd.read_excel(file_path)
-                    return df.to_string()
+                    return df.head(50).to_string()[:max_chars]
                 except Exception as e:
-                    return f"[ARCHIVO EXCEL: {path_obj.name} - Error: {e}]"
+                    return f"[XLSX error: {e}]"
             
             else:
-                return f"[ARCHIVO BINARIO NO SOPORTADO: {path_obj.name} - Tipo: {file_extension}]"
+                return f"[Tipo no soportado: {ext}]"
         
         except Exception as e:
-            logger.error(f"Error general leyendo archivo {file_path}: {e}")
-            return f"[ERROR leyendo archivo: {str(e)}]"
+            return f"[Error: {e}]"
     
-    def _format_incident_metadata(self, metadata: Dict) -> str:
-        """Formatea metadata extrayendo el destinatario real del campo 'outline'"""
-        user = metadata.get('user', {}).get('id', 'unknown')
+    def _expand_response(self, compact: Dict) -> Dict:
+        verdict_map = {"TP": "TRUE_POSITIVE", "FP": "FALSE_POSITIVE", "RR": "REQUIRES_REVIEW"}
+        risk_map = {"C": "CRITICAL", "H": "HIGH", "M": "MEDIUM", "L": "LOW", "N": "N/A"}
         
-        event_details = metadata.get('event_details', {})
-        start_event = event_details.get('start_event', {})
+        ctx = compact.get('ctx', {})
         
-        # Acción
-        action = start_event.get('action', {}).get('kind', 'unknown')
-        
-        # Origen
-        src_info = start_event.get('source', {})
-        source_str = "Desconocido"
-        if 'app' in src_info:
-            source_str = f"App: {src_info['app'].get('name')}"
-        elif 'file' in src_info:
-            source_str = f"File: {src_info['file'].get('name')}"
-
-        # --- LÓGICA DE DESTINO MEJORADA ---
-        dst_info = start_event.get('destination', {})
-        dest_str = "Desconocido"
-        
-        # 1. Prioridad: Campo 'outline' (descubierto en debug)
-        if 'outline' in dst_info:
-            dest_str = f"Email to: {dst_info['outline']}"
-            if 'domain' in dst_info:
-                dest_str += f" (Domain: {dst_info['domain']})"
-                
-        # 2. Prioridad: Campos estándar de email (si no están enmascarados)
-        elif 'email' in dst_info:
-             email_info = dst_info['email']
-             if 'to' in email_info and isinstance(email_info['to'], list):
-                 # Filtramos [masked]
-                 clean_to = [t for t in email_info['to'] if "[masked]" not in t]
-                 if clean_to:
-                     dest_str = f"Email to: {', '.join(clean_to)}"
-                 else:
-                     # Si todo está enmascarado pero tenemos dominio
-                     if 'domain' in dst_info:
-                         dest_str = f"Email to: [Masked]@{dst_info['domain']}"
-             elif 'recipient' in email_info:
-                 dest_str = f"Email to: {email_info.get('recipient')}"
-
-        # 3. Otros destinos
-        elif 'internet' in dst_info:
-            dest_str = f"Internet URL: {dst_info['internet'].get('url')}"
-        elif 'removable_media' in dst_info:
-            dest_str = "USB / Almacenamiento Externo"
-        elif 'app' in dst_info:
-            dest_str = f"App: {dst_info['app'].get('name')}"
-
-        # Copy Paste Snippet
-        clipboard_content = ""
-        if 'content_inspection' in metadata:
-            clipboard_content = metadata['content_inspection'].get('snippet', '')
-        elif 'clipboard' in str(action).lower():
-             clipboard_content = metadata.get('payload', '')
-
-        formatted = f"""
-{'='*60}
-METADATA DEL INCIDENTE
-{'='*60}
-- Usuario: {user}
-- Acción: {action}
-- Origen Detectado: {source_str}
-- Destino Detectado: {dest_str}
-"""
-        if clipboard_content:
-            formatted += f"\n📋 CONTENIDO DEL PORTAPAPELES (SNIPPET):\n{clipboard_content}\n"
-            
-        return formatted
+        return {
+            'verdict': verdict_map.get(compact.get('v'), compact.get('v')),
+            'confidence': compact.get('c', 0),
+            'executive_summary': compact.get('s', ''),
+            'incident_context': {
+                'user': ctx.get('u', ''),
+                'source': ctx.get('src', ''),
+                'destination': ctx.get('dst', ''),
+                'data_type': ctx.get('dt', '')
+            },
+            'reasoning': compact.get('r', ''),
+            'risk_level': risk_map.get(compact.get('rl'), compact.get('rl')),
+            'indicators': compact.get('ind', [])
+        }
     
     def analyze_incident(
         self, 
@@ -245,78 +214,54 @@ METADATA DEL INCIDENTE
         incident_dir: Path,
         use_rag: bool = True
     ) -> Dict:
-        """
-        Analiza un incidente usando prompt multimodal (Texto + Imagen)
-        """
         start_time = time.time()
         
         try:
-            logger.info(f"Analizando incidente: {incident_id}")
-            
-            # 1. Leer metadata.json
             metadata_path = incident_dir / "metadata.json"
             if not metadata_path.exists():
-                return {"success": False, "error": f"No se encontró metadata.json"}
+                return {"success": False, "error": "metadata.json no encontrado"}
             
             with open(metadata_path, 'r', encoding='utf-8') as f:
                 metadata = json.load(f)
             
-            # 2. Buscar archivo adjunto
-            file_content_or_image = None
+            file_content = None
             file_name = None
             
             for file in incident_dir.iterdir():
-                if file.name != "metadata.json" and file.is_file():
+                if file.name not in ["metadata.json", "analysis_result.json"] and file.is_file():
                     file_name = file.name
-                    logger.info(f"Archivo detectado: {file_name}")
-                    file_content_or_image = self._read_file_content(str(file))
+                    file_content = self._read_file_content(str(file))
                     break
             
-            # 3. Construir Prompt Multimodal
             prompt_parts = []
             
-            # -- Parte A: Contexto de Texto --
-            text_context = self.system_prompt + "\n\n"
+            text_prompt = self.system_prompt + "\n\n"
             
             if use_rag:
-                rag_context = self._build_rag_context(limit=5)
-                if rag_context:
-                    text_context += rag_context + "\n\n"
+                rag = self._build_rag_context(limit=3)
+                if rag:
+                    text_prompt += rag + "\n"
             
-            text_context += self._format_incident_metadata(metadata)
+            text_prompt += "[INCIDENTE]\n"
+            text_prompt += self._compress_metadata(metadata)
             
-            # -- Parte B: El Archivo (Imagen o Texto) --
-            if file_content_or_image:
-                text_context += f"\nCONTENIDO DEL ARCHIVO ADJUNTO: {file_name}\n"
-                text_context += "="*80 + "\n"
+            if file_content:
+                text_prompt += f"\n\n[ARCHIVO: {file_name}]\n"
                 
-                if isinstance(file_content_or_image, PIL.Image.Image):
-                    # --- FLUJO DE IMAGEN ---
-                    text_context += "[IMAGEN ADJUNTA A CONTINUACIÓN PARA ANÁLISIS VISUAL]\n"
-                    prompt_parts.append(text_context) # Agregar texto previo
-                    prompt_parts.append(file_content_or_image) # Agregar OBJETO IMAGEN REAL
-                    
-                    # Preparar cierre del prompt
-                    text_context = "\n" + "="*80 + "\n"
-                    text_context += "INSTRUCCIÓN VISUAL: Analiza la imagen anterior. Describe su contenido y busca datos sensibles (PII, Tarjetas, Credenciales, Secretos).\n"
+                if isinstance(file_content, PIL.Image.Image):
+                    prompt_parts.append(text_prompt)
+                    prompt_parts.append(file_content)
+                    text_prompt = "\n[Analiza imagen arriba]\n"
                 else:
-                    # --- FLUJO DE TEXTO ---
-                    text_context += str(file_content_or_image)[:50000]
-                    text_context += "\n" + "="*80 + "\n"
-            else:
-                text_context += "\n⚠️ INCIDENTE SIN ARCHIVO FÍSICO O VISIBLE\n"
+                    text_prompt += str(file_content)
             
-            # -- Parte C: Instrucciones Finales --
-            text_context += "\n🎯 GENERA TU ANÁLISIS EN JSON:\n"
-            prompt_parts.append(text_context)
-            
-            # 4. Enviar a Gemini
-            logger.info(f"Enviando a Gemini (Partes: {len(prompt_parts)})...")
+            text_prompt += "\n\nResponde JSON:"
+            prompt_parts.append(text_prompt)
             
             model = genai.GenerativeModel(
                 model_name=self.model_name,
                 generation_config={
-                    "temperature": 1.0,
+                    "temperature": 0.7,
                     "response_mime_type": "application/json",
                     "response_schema": self.response_schema
                 }
@@ -326,16 +271,23 @@ METADATA DEL INCIDENTE
             processing_time = time.time() - start_time
             
             raw_response = response.text
-            analysis = json.loads(raw_response)
+            compact_result = json.loads(raw_response)
+            expanded = self._expand_response(compact_result)
             
-            # Guardar en DB
+            tokens_used = 0
+            if hasattr(response, 'usage_metadata'):
+                tokens_used = getattr(response.usage_metadata, 'total_token_count', 0)
+            
             analysis_data = {
                 'incident_id': incident_id,
-                'gemini_verdict': analysis['verdict'],
-                'gemini_confidence': analysis.get('confidence'),
-                'gemini_reasoning': analysis.get('reasoning'),
+                'gemini_verdict': expanded['verdict'],
+                'gemini_confidence': expanded['confidence'],
+                'gemini_reasoning': expanded['reasoning'],
                 'gemini_raw_response': raw_response,
-                'processing_time': processing_time
+                'executive_summary': expanded['executive_summary'],
+                'risk_level': expanded['risk_level'],
+                'processing_time': processing_time,
+                'tokens_used': tokens_used
             }
             
             analysis_id = self.db.insert_analysis(analysis_data)
@@ -344,20 +296,21 @@ METADATA DEL INCIDENTE
                 "success": True,
                 "incident_id": incident_id,
                 "analysis_id": analysis_id,
-                "verdict": analysis['verdict'],
-                "confidence": analysis['confidence'],
-                "executive_summary": analysis['executive_summary'],
-                "incident_context": analysis['incident_context'],
-                "reasoning": analysis['reasoning'],
-                "risk_level": analysis.get('risk_level', 'N/A'),
-                "indicators": analysis.get('indicators', []),
+                "verdict": expanded['verdict'],
+                "confidence": expanded['confidence'],
+                "executive_summary": expanded['executive_summary'],
+                "incident_context": expanded['incident_context'],
+                "reasoning": expanded['reasoning'],
+                "risk_level": expanded['risk_level'],
+                "indicators": expanded.get('indicators', []),
                 "processing_time": processing_time,
-                "has_file": file_content_or_image is not None,
+                "tokens_used": tokens_used,
+                "has_file": file_content is not None,
                 "file_name": file_name
             }
         
         except Exception as e:
-            logger.error(f"Error analizando: {e}")
+            logger.error(f"Error analizando {incident_id}: {e}")
             return {
                 "success": False,
                 "error": str(e),
